@@ -7,7 +7,8 @@ Download audio from YouTube based on your Spotify playlists.
 This module takes Spotify playlist exports (CSV files) and:
 1. Searches YouTube for matching tracks
 2. Downloads audio in high-quality m4a format
-3. Organizes files by playlist with full metadata
+3. Consolidates all songs into a global library (deduplicated)
+4. Exports playlist metadata for use in music players
 
 ## Requirements
 
@@ -71,14 +72,47 @@ The original duration comes from Spotify. To update it with the actual audio dur
 python update_duration.py output/My_Playlist/2026-02-04T12-30/output.json
 ```
 
+### 6. Migrate Songs to Global Directory
+
+After processing all playlists, consolidate songs into a single `songs/` folder:
+
+```bash
+mkdir songs
+python migrate_songs.py --cleanup
+```
+
+This moves all audio files to `songs/`, deduplicates across playlists, and updates paths in output.json files.
+
+### 7. Export Final Playlists
+
+Export playlist metadata to a clean `playlists/` folder:
+
+```bash
+mkdir playlists
+python export_playlists.py
+```
+
+Final structure:
+```
+search/
+├── songs/
+│   ├── Artist-Track.m4a
+│   └── ...
+├── playlists/
+│   ├── My_Playlist.json
+│   └── ...
+```
+
 ## Scripts
 
-| Script               | Purpose                                                     |
-| -------------------- | ----------------------------------------------------------- |
-| `main.py`            | Search YouTube for Spotify tracks, save URLs to output.json |
-| `download.py`        | Download audio from YouTube URLs in output.json             |
-| `retry_failures.py`  | Retry failed downloads from failures.json                   |
-| `update_duration.py` | Update duration_ms with actual audio file durations         |
+| Script                | Step | Purpose                                                     |
+| --------------------- | ---- | ----------------------------------------------------------- |
+| `main.py`             | 1    | Search YouTube for Spotify tracks, save URLs to output.json |
+| `download.py`         | 2    | Download audio from YouTube URLs in output.json             |
+| `retry_failures.py`   | 3    | Retry failed downloads from failures.json                   |
+| `update_duration.py`  | 4    | Update duration_ms with actual audio file durations         |
+| `migrate_songs.py`    | 5    | Move all songs to global `songs/` directory, deduplicate    |
+| `export_playlists.py` | 6    | Export playlist JSON files to `playlists/` directory        |
 
 ## Command Line Options
 
@@ -109,7 +143,22 @@ python update_duration.py <output_json>
 ```
 - `output_json`: Path to output.json file
 
+### migrate_songs.py
+```bash
+python migrate_songs.py [--dry-run] [--cleanup]
+```
+- `--dry-run`: Preview changes without moving files
+- `--cleanup`: Remove empty downloads/ directories after migration
+
+### export_playlists.py
+```bash
+python export_playlists.py [--dry-run]
+```
+- `--dry-run`: Preview changes without copying files
+
 ## Output Structure
+
+### After Download (per playlist)
 
 ```
 output/
@@ -122,7 +171,24 @@ output/
             └── ...
 ```
 
-## Output.json Format
+### After Migration (final structure)
+
+```
+search/
+├── songs/                          # All audio files (deduplicated)
+│   ├── Artist1-Track1.m4a
+│   ├── Artist2-Track2.m4a
+│   └── ...
+├── playlists/                      # Final playlist metadata
+│   ├── Playlist1.json
+│   ├── Playlist2.json
+│   └── ...
+└── output/                         # Can be deleted after migration
+```
+
+## Playlist JSON Format
+
+After migration, playlist files use relative paths:
 
 ```json
 [
@@ -133,7 +199,7 @@ output/
     "release_date": "2024-01-15",
     "duration_ms": "234567",
     "url": "https://www.youtube.com/watch?v=abc123",
-    "local_path": "/path/to/downloads/Artist_Name-Song_Title.m4a"
+    "local_path": "songs/Artist_Name-Song_Title.m4a"
   }
 ]
 ```
