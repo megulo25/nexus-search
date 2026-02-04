@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+Retry failed downloads from failures.json files.
+Updates output.json with successful retries and keeps remaining failures.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def sanitize_filename(name: str) -> str:
+    """Remove invalid characters and replace spaces with underscores."""
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '_')
+    # Replace spaces with underscores for robustness
+    name = name.replace(' ', '_')
+    # Replace semicolons (used for multiple artists) with underscores
+    name = name.replace(';', '_')
+    # Remove any double underscores
+    while '__' in name:
+        name = name.replace('__', '_')
+    return name.strip('_')
+
+
+def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
+    """
+    Download audio from YouTube URL using yt-dlp.
+    
+    Returns:
+        tuple: (success: bool, error_message: str)
+    """
+    try:
+        result = subprocess.run(
+            [
+                'yt-dlp',
+                '--extract-audio',
+                '--audio-format', 'm4a',
+                '--audio-quality', '0',
+                '-o', str(output_path),
+                url
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode != 0:
+            return False, result.stderr.strip() or result.stdout.strip()
+        
+        return True, ''
+        
+    except subprocess.TimeoutExpired:
+        return False, 'Download timed out (5 minutes)'
+    except Exception as e:
+        return False, str(e)
+
+
+def process_failures(failures_path: Path, delay: float) -> None:
+    """Process a failures.json file and retry all failed downloads."""
+    
+    # Validate input file
+    if not failures_path.exists():
+        print(f"Error: File not found: {failures_path}")
+        sys.exit(1)
+    
+    # Determine paths
+    output_dir = failures_path.parent
+    output_json_path = output_dir / 'output.json'
+    downloads_dir = output_dir / 'downloads'
+    
+    # Load failures
+    with open(failures_path, 'r', encoding='utf-8') as f:
+        failures = json.load(f)
+    
+    if not failures:
+        print("No failures found in failures.json")
+        return
+    
+    # Load output.json
+    if not output_json_path.exists():
+        print(f"Error: output.json not found at: {output_json_path}")
+        sys.exit(1)
+    
+    with open(output_json_path, 'r', encoding='utf-8') as f:
+        tracks = json.load(f)
+    
+    # Create downloads directory if needed
+    downloads_dir.mkdir(exist_ok=True)
+    
+    print(f"Retrying {len(failures)} failed downloads")
+    print(f"Output directory: {output_dir}")
+    print(f"Delay between downloads: {delay}s")
+    print("-" * 50)
+    
+    remaining_failures = []
+    success_count = 0
+    
+    for i, failure in enumerate(failures, 1):
+        track_name = failure.get('track_name', 'Unknown')
+        artist = failure.get('artist', 'Unknown')
+        url = failure.get('url', '')
+        
+        if not url:
+            print(f"[{i}/{len(failures)}] ✗ {artist} - {track_name}: No URL")
+            remaining_failures.append({
+                'track_name': track_name,
+                'artist': artist,
+                'url': url,
+                'error': 'No URL provided'
+            })
+            continue
+        
+        # Create sanitized filename
+        filename = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}.m4a"
+        output_path = downloads_dir / filename
+        
+        print(f"[{i}/{len(failures)}] Retrying: {artist} - {track_name}...")
+        
+        success, error = download_audio(url, output_path)
+        
+        if success:
+            print(f"[{i}/{len(failures)}] ✓ {artist} - {track_name}")
+            success_count += 1
+            
+            # Find and update matching track in output.json by URL
+            for track in tracks:
+                if track.get('url') == url:
+                    track['local_path'] = str(output_path.resolve())
+                    break
+            
+            # Save output.json after each successful download
+            with open(output_json_path, 'w', encoding='utf-8') as f:
+                json.dump(tracks, f, indent=2, ensure_ascii=False)
+        else:
+            print(f"[{i}/{len(failures)}] ✗ {artist} - {track_name}: {error}")
+            remaining_failures.append({
+                'track_name': track_name,
+                'artist': artist,
+                'url': url,
+                'error': error
+            })
+        
+        # Rate limiting - don't delay after the last track
+        if i < len(failures):
+            time.sleep(delay)
+    
+    # Update or remove failures.json
+    if remaining_failures:
+        with open(failures_path, 'w', encoding='utf-8') as f:
+            json.dump(remaining_failures, f, indent=2, ensure_ascii=False)
+        print(f"\nRemaining failures saved to: {failures_path}")
+    else:
+        # Remove failures.json if all retries succeeded
+        failures_path.unlink()
+        print(f"\nAll retries successful - removed: {failures_path}")
+    
+    # Print summary
+    print("-" * 50)
+    print(f"Complete: {success_count}/{len(failures)} successful")
+    if remaining_failures:
+        print(f"Still failed: {len(remaining_failures)} tracks")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Retry failed downloads from failures.json files'
+    )
+    parser.add_argument(
+        'failures_json',
+        type=Path,
+        help='Path to failures.json file containing failed downloads'
+    )
+    parser.add_argument(
+        '--delay',
+        type=float,
+        default=5.0,
+        help='Delay in seconds between downloads (default: 5.0)'
+    )
+    
+    args = parser.parse_args()
+    
+    process_failures(args.failures_json, args.delay)
+
+
+if __name__ == '__main__':
+    main()
