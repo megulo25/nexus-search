@@ -5,10 +5,10 @@ Download audio from YouTube based on your Spotify playlists.
 ## Overview
 
 This module takes Spotify playlist exports (CSV files) and:
-1. Searches YouTube for matching tracks
-2. Downloads audio in high-quality m4a format
+1. Searches YouTube for matching tracks and downloads audio in high-quality m4a format
+2. Retries any failed downloads
 3. Consolidates all songs into a global library (deduplicated)
-4. Exports playlist metadata for use in music players
+4. Exports playlist metadata for use in the Nexus backend
 
 ## Requirements
 
@@ -21,52 +21,62 @@ This module takes Spotify playlist exports (CSV files) and:
 ```bash
 # Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## Workflow
 
 ### 1. Export Your Spotify Playlist
 
 Use a tool like [Exportify](https://exportify.net/) to export your Spotify playlist as a CSV file. Save it to the `spotify_playlists/` folder.
 
-### 2. Search YouTube for Tracks
+The CSV must include these columns: `Track Name`, `Artist Name(s)`, `Album Name`, `Release Date`, `Duration (ms)`.
+
+### 2. Search YouTube & Download Audio
 
 ```bash
-python main.py spotify_playlists/My_Playlist.csv
+python youtube-search.py spotify_playlists/My_Playlist.csv
 ```
 
-This creates an output folder with YouTube URLs for each track:
-```
-output/My_Playlist/2026-02-04T12-30/output.json
-```
+This searches YouTube for each track, downloads the audio as `.m4a`, and saves everything to a timestamped output folder:
 
-### 3. Download Audio Files
-
-```bash
-python download.py output/My_Playlist/2026-02-04T12-30/output.json
 ```
-
-Downloads are saved to:
-```
-output/My_Playlist/2026-02-04T12-30/downloads/
+output/My_Playlist/2026-02-04T12-30/
+├── output.json       # Track metadata + YouTube URLs + local file paths
+├── failures.json     # Failed downloads (if any)
 ├── Artist_Name-Track_Title.m4a
 ├── Another_Artist-Another_Song.m4a
 └── ...
 ```
 
-### 4. Retry Failed Downloads (if any)
+The `output.json` is saved after each successful download, so the process is **resumable** — just run the same command again to pick up where you left off.
+
+### 3. Retry Failed Downloads (if needed)
+
+If some downloads failed (check `failures.json`), retry them:
 
 ```bash
 python retry_failures.py output/My_Playlist/2026-02-04T12-30/failures.json
 ```
 
+This retries each failed track, updates `output.json` on success, and removes `failures.json` if all retries succeed.
+
+### 4. Re-download from Existing URLs (optional)
+
+If you need to re-download audio from URLs already saved in `output.json` (e.g., after clearing downloads), use:
+
+```bash
+python download.py output/My_Playlist/2026-02-04T12-30/output.json
+```
+
+Downloads are saved to a `downloads/` subdirectory and `output.json` is updated with the new `local_path` values.
+
 ### 5. Update Duration Metadata (optional)
 
-The original duration comes from Spotify. To update it with the actual audio duration:
+The original `duration_ms` comes from Spotify. To replace it with the actual audio file duration:
 
 ```bash
 python update_duration.py output/My_Playlist/2026-02-04T12-30/output.json
@@ -74,54 +84,62 @@ python update_duration.py output/My_Playlist/2026-02-04T12-30/output.json
 
 ### 6. Migrate Songs to Global Directory
 
-After processing all playlists, consolidate songs into a single `songs/` folder:
+After processing all your playlists, consolidate songs into a single `songs/` folder:
 
 ```bash
-mkdir songs
 python migrate_songs.py --cleanup
 ```
 
-This moves all audio files to `songs/`, deduplicates across playlists, and updates paths in output.json files.
+This:
+- Moves all audio files from per-playlist output dirs into `search/songs/`
+- Deduplicates across playlists (same song in multiple playlists is stored once)
+- Updates all `output.json` files to reference the new `songs/` paths
+- With `--cleanup`, removes empty download directories
 
 ### 7. Export Final Playlists
 
 Export playlist metadata to a clean `playlists/` folder:
 
 ```bash
-mkdir playlists
 python export_playlists.py
 ```
 
-Final structure:
+This copies each `output.json` to `playlists/<Playlist_Name>.json`, named after the playlist directory.
+
+### Final Structure
+
 ```
 search/
-├── songs/
-│   ├── Artist-Track.m4a
+├── songs/                          # All audio files (deduplicated)
+│   ├── Artist1-Track1.m4a
+│   ├── Artist2-Track2.m4a
 │   └── ...
-├── playlists/
+├── playlists/                      # Playlist metadata for the backend
 │   ├── My_Playlist.json
+│   ├── Another_Playlist.json
 │   └── ...
+└── output/                         # Intermediate files (can be deleted)
 ```
 
 ## Scripts
 
-| Script                | Step | Purpose                                                     |
-| --------------------- | ---- | ----------------------------------------------------------- |
-| `main.py`             | 1    | Search YouTube for Spotify tracks, save URLs to output.json |
-| `download.py`         | 2    | Download audio from YouTube URLs in output.json             |
-| `retry_failures.py`   | 3    | Retry failed downloads from failures.json                   |
-| `update_duration.py`  | 4    | Update duration_ms with actual audio file durations         |
-| `migrate_songs.py`    | 5    | Move all songs to global `songs/` directory, deduplicate    |
-| `export_playlists.py` | 6    | Export playlist JSON files to `playlists/` directory        |
+| Script                | Step | Purpose                                                          |
+| --------------------- | ---- | ---------------------------------------------------------------- |
+| `youtube-search.py`   | 1    | Search YouTube for Spotify tracks, download audio, save metadata |
+| `download.py`         | -    | Re-download audio from existing URLs in output.json              |
+| `retry_failures.py`   | 2    | Retry failed downloads from failures.json                        |
+| `update_duration.py`  | 3    | Update duration_ms with actual audio file durations              |
+| `migrate_songs.py`    | 4    | Move all songs to global `songs/` directory, deduplicate         |
+| `export_playlists.py` | 5    | Export playlist JSON files to `playlists/` directory             |
 
 ## Command Line Options
 
-### main.py
+### youtube-search.py
 ```bash
-python main.py <csv_file> [--delay SECONDS]
+python youtube-search.py <csv_file> [--delay SECONDS]
 ```
 - `csv_file`: Path to Spotify CSV export
-- `--delay`: Seconds between searches (default: 2)
+- `--delay`: Seconds between downloads (default: 2)
 
 ### download.py
 ```bash
@@ -135,7 +153,7 @@ python download.py <output_json> [--delay SECONDS]
 python retry_failures.py <failures_json> [--delay SECONDS]
 ```
 - `failures_json`: Path to failures.json file
-- `--delay`: Seconds between downloads (default: 5)
+- `--delay`: Seconds between retries (default: 5)
 
 ### update_duration.py
 ```bash
@@ -148,7 +166,7 @@ python update_duration.py <output_json>
 python migrate_songs.py [--dry-run] [--cleanup]
 ```
 - `--dry-run`: Preview changes without moving files
-- `--cleanup`: Remove empty downloads/ directories after migration
+- `--cleanup`: Remove empty download directories after migration
 
 ### export_playlists.py
 ```bash
@@ -158,30 +176,28 @@ python export_playlists.py [--dry-run]
 
 ## Output Structure
 
-### After Download (per playlist)
+### After Search & Download (per playlist)
 
 ```
 output/
 └── Playlist_Name/
     └── 2026-02-04T12-30/           # Timestamp of search
-        ├── output.json              # Track metadata + URLs + local paths
+        ├── output.json              # Track metadata + YouTube URLs + local paths
         ├── failures.json            # Failed downloads (if any)
-        └── downloads/               # Audio files
-            ├── Artist-Track.m4a
-            └── ...
+        ├── Artist-Track.m4a         # Audio files (from youtube-search.py)
+        └── downloads/               # Audio files (from download.py, if used)
+            └── Artist-Track.m4a
 ```
 
-### After Migration (final structure)
+### After Migration
 
 ```
 search/
 ├── songs/                          # All audio files (deduplicated)
 │   ├── Artist1-Track1.m4a
-│   ├── Artist2-Track2.m4a
 │   └── ...
-├── playlists/                      # Final playlist metadata
+├── playlists/                      # Playlist metadata
 │   ├── Playlist1.json
-│   ├── Playlist2.json
 │   └── ...
 └── output/                         # Can be deleted after migration
 ```
@@ -206,23 +222,24 @@ After migration, playlist files use relative paths:
 
 ## Tips
 
-- **Avoid rate limiting**: Use the `--delay` flag to add time between downloads. Default is 5 seconds, increase if you encounter errors.
-- **Resume interrupted downloads**: The scripts save progress after each successful download. Just run again to continue.
+- **Avoid rate limiting**: Use the `--delay` flag to add time between downloads. Default is 2 seconds for search, 5 seconds for download/retry. Increase if you encounter errors.
+- **Resume interrupted downloads**: `youtube-search.py` saves `output.json` after each successful download. Just run the same command again to continue.
 - **Check failures**: Look at `failures.json` for error details. Common issues include region-restricted videos or removed content.
+- **Dry run first**: Use `--dry-run` with `migrate_songs.py` and `export_playlists.py` to preview changes before committing.
 
 ## Troubleshooting
 
 ### "Sign in to confirm you're not a bot"
 YouTube is rate limiting requests. Wait a few minutes and try again with a longer delay:
 ```bash
-python download.py output.json --delay 10
+python youtube-search.py spotify_playlists/My_Playlist.csv --delay 10
 ```
 
 ### Download times out
 The video may be very long or there may be network issues. The script has a 5-minute timeout per download. Try again later.
 
 ### "No local_path" in update_duration.py
-The track hasn't been downloaded yet. Run `download.py` first.
+The track hasn't been downloaded yet. Run `youtube-search.py` or `download.py` first.
 
 ## License
 
