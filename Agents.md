@@ -215,6 +215,29 @@ The scripts are designed to run in a specific order. Steps 1-4 are run per playl
    python export_playlists.py
    ```
 
+### Migrating to Backend
+
+8. **Copy playlist JSON** to the backend user directory
+   ```bash
+   cp playlists/My_Playlist.json ../backend/playlists/{username}/My_Playlist.json
+   ```
+9. **Copy audio files** to backend songs directory (no-clobber)
+   ```bash
+   cp -n songs/*.m4a ../backend/songs/
+   ```
+10. **Run backend import** to transform and load data
+    ```bash
+    cd ../backend
+    yarn import:playlists
+    ```
+
+The `importPlaylists.js` script handles schema transformation:
+- `track_name` → `trackName`, `duration_ms` (string) → `durationMs` (int)
+- `url` → `sourceUrl`, `local_path` → `filePath` (basename only)
+- Generates UUID `id` and `createdAt` timestamp
+- Deduplicates by `artist.toLowerCase() + "|" + trackName.toLowerCase()`
+- Creates/merges playlist in `data/playlists.json` owned by the matched user
+
 ### Final Directory Structure
 
 ```

@@ -46,11 +46,8 @@ def build_file_map(output_json_files: list[Path]) -> dict[str, list[tuple[Path, 
 def migrate_songs(songs_dir: Path, output_dir: Path, dry_run: bool, cleanup: bool) -> None:
     """Migrate all songs to the global songs/ directory."""
     
-    # Validate songs directory exists
-    if not songs_dir.exists():
-        print(f"Error: Songs directory does not exist: {songs_dir}")
-        print("Please create it first: mkdir songs")
-        sys.exit(1)
+    # Create songs directory if it doesn't exist
+    songs_dir.mkdir(exist_ok=True)
     
     if not songs_dir.is_dir():
         print(f"Error: {songs_dir} is not a directory")
@@ -88,6 +85,11 @@ def migrate_songs(songs_dir: Path, output_dir: Path, dry_run: bool, cleanup: boo
         source_path = None
         for json_path, track in track_entries:
             candidate = Path(track['local_path'])
+            if candidate.exists():
+                source_path = candidate
+                break
+            # Try resolving relative to the output.json's directory
+            candidate = json_path.parent / Path(track['local_path']).name
             if candidate.exists():
                 source_path = candidate
                 break

@@ -66,63 +66,105 @@ def sanitize_filename(name: str) -> str:
     """Remove or replace characters that are invalid in filenames."""
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
-        name = name.replace(char, "_")
-    return name.strip()
+        name = name.replace(char, '_')
+    # Replace spaces with underscores for robustness
+    name = name.replace(' ', '_')
+    # Replace semicolons (used for multiple artists) with underscores
+    name = name.replace(';', '_')
+    # Remove any double underscores
+    while '__' in name:
+        name = name.replace('__', '_')
+    return name.strip('_')
 
 
-def download_song(song: dict, output_dir: Path) -> tuple[bool, str, str]:
+def get_songs_dir() -> Path:
+    """Get the global songs/ directory relative to the script location."""
+    songs_dir = Path(__file__).parent.resolve() / 'songs'
+    songs_dir.mkdir(exist_ok=True)
+    return songs_dir
+
+
+def download_song(song: dict, songs_dir: Path) -> tuple[bool, str, str, str]:
     """
     Search and download a song from YouTube using yt-dlp.
+    Downloads to the global songs/ directory.
     
     Returns:
-        tuple: (success: bool, url: str, error_reason: str)
+        tuple: (success: bool, url: str, local_path: str, error_reason: str)
     """
     track_name = song["track_name"]
     artist = song["artist"]
     search_query = f"{track_name} {artist}"
     
     # Sanitize filename
-    filename = sanitize_filename(f"{artist} - {track_name}")
-    output_template = str(output_dir / f"{filename}.%(ext)s")
+    base = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}"
+    filename = f"{base}.m4a"
+    output_template = str(songs_dir / f"{base}.%(ext)s")
+    expected_path = songs_dir / filename
+    relative_path = f"songs/{filename}"
     
     try:
-        # Run yt-dlp to search, download, and get the URL
-        result = subprocess.run(
+        # Step 1: Search YouTube and get the URL (no download)
+        search_result = subprocess.run(
+            [
+                "yt-dlp",
+                "--print", "webpage_url",
+                "--no-download",
+                f"ytsearch1:{search_query}"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if search_result.returncode != 0:
+            error_msg = search_result.stderr.strip() if search_result.stderr else "Unknown error"
+            if "no results" in error_msg.lower():
+                return False, "", "", "No results found"
+            return False, "", "", error_msg
+        
+        url = search_result.stdout.strip().split("\n")[0]
+        
+        if not url or not url.startswith("http"):
+            return False, "", "", "Could not extract YouTube URL"
+        
+        # Step 2: Download audio using the resolved URL
+        dl_result = subprocess.run(
             [
                 "yt-dlp",
                 "-x",
                 "--audio-format", "m4a",
                 "--audio-quality", "0",
-                "--print", "webpage_url",
                 "-o", output_template,
-                f"ytsearch1:{search_query}"
+                url
             ],
             capture_output=True,
             text=True,
             timeout=300  # 5 minute timeout per song
         )
         
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-            # Check for common error patterns
-            if "No video formats found" in error_msg or "no results" in error_msg.lower():
-                return False, "", "No results found"
-            return False, "", error_msg
+        if dl_result.returncode != 0:
+            error_msg = dl_result.stderr.strip() if dl_result.stderr else "Unknown error"
+            return False, url, "", error_msg
         
-        # Extract URL from stdout (first line should be the URL)
-        url = result.stdout.strip().split("\n")[0]
+        # Verify the file was actually written to disk
+        if not expected_path.exists():
+            # Check if yt-dlp left the file with a different extension
+            stem = expected_path.stem
+            alt_files = list(songs_dir.glob(f"{stem}.*"))
+            if alt_files:
+                alt_files[0].rename(expected_path)
+            else:
+                return False, url, "", f"File not found after download at {expected_path}"
         
-        if not url or not url.startswith("http"):
-            return False, "", "Could not extract YouTube URL"
-        
-        return True, url, ""
+        return True, url, relative_path, ""
         
     except subprocess.TimeoutExpired:
-        return False, "", "Download timed out"
+        return False, "", "", "Download timed out"
     except FileNotFoundError:
-        return False, "", "yt-dlp not found. Please install it: pip install yt-dlp"
+        return False, "", "", "yt-dlp not found. Please install it: pip install yt-dlp"
     except Exception as e:
-        return False, "", str(e)
+        return False, "", "", str(e)
 
 
 def main():
@@ -137,7 +179,9 @@ def main():
     
     # Create output directory
     output_dir = create_output_directory(csv_path)
+    songs_dir = get_songs_dir()
     print(f"Output directory: {output_dir}")
+    print(f"Songs directory: {songs_dir}")
     
     # Parse CSV
     print(f"Parsing CSV: {csv_path}")
@@ -145,6 +189,8 @@ def main():
     print(f"Found {len(songs)} songs")
     
     # Process each song
+    output_json_path = output_dir / "output.json"
+    failures_json_path = output_dir / "failures.json"
     successful = []
     failures = []
     
@@ -154,37 +200,38 @@ def main():
         
         print(f"[{i}/{len(songs)}] Downloading: {artist} - {track_name}")
         
-        success, url, error_reason = download_song(song, output_dir)
+        success, url, local_path, error_reason = download_song(song, songs_dir)
         
         if success:
             successful.append({
                 **song,
-                "url": url
+                "url": url,
+                "local_path": local_path
             })
             print(f"  ✓ Success: {url}")
+            
+            # Save output.json after each successful download (resumable)
+            with open(output_json_path, "w", encoding="utf-8") as f:
+                json.dump(successful, f, indent=2, ensure_ascii=False)
         else:
             failures.append({
                 "track_name": track_name,
                 "artist": artist,
-                "error_reason": error_reason
+                "url": url,
+                "error": error_reason
             })
             print(f"  ✗ Failed: {error_reason}")
+            
+            # Save failures.json after each failure
+            with open(failures_json_path, "w", encoding="utf-8") as f:
+                json.dump(failures, f, indent=2, ensure_ascii=False)
         
         # Rate limiting (skip delay on last song)
         if i < len(songs):
             time.sleep(delay)
     
-    # Write output JSON
-    output_json_path = output_dir / "output.json"
-    with open(output_json_path, "w", encoding="utf-8") as f:
-        json.dump(successful, f, indent=2, ensure_ascii=False)
     print(f"\nWrote {len(successful)} successful downloads to: {output_json_path}")
-    
-    # Write failures JSON (if any)
     if failures:
-        failures_json_path = output_dir / "failures.json"
-        with open(failures_json_path, "w", encoding="utf-8") as f:
-            json.dump(failures, f, indent=2, ensure_ascii=False)
         print(f"Wrote {len(failures)} failures to: {failures_json_path}")
     
     # Summary

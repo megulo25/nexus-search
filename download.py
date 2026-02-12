@@ -41,7 +41,7 @@ def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
                 '--extract-audio',
                 '--audio-format', 'm4a',
                 '--audio-quality', '0',
-                '-o', str(output_path),
+                '-o', str(output_path.with_suffix('.%(ext)s')),
                 url
             ],
             capture_output=True,
@@ -51,6 +51,16 @@ def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
         
         if result.returncode != 0:
             return False, result.stderr.strip() or result.stdout.strip()
+        
+        # Verify the file was actually written to disk
+        if not output_path.exists():
+            # Check if yt-dlp left the file with a different extension
+            stem = output_path.stem
+            alt_files = list(output_path.parent.glob(f"{stem}.*"))
+            if alt_files:
+                alt_files[0].rename(output_path)
+            else:
+                return False, f'Download succeeded but file not found at {output_path}'
         
         return True, ''
         
@@ -79,12 +89,11 @@ def process_output_json(json_path: Path, delay: float) -> None:
         print("No tracks found in output.json")
         return
     
-    # Create downloads directory
-    output_dir = json_path.parent
-    downloads_dir = output_dir / 'downloads'
-    downloads_dir.mkdir(exist_ok=True)
+    # Use global songs/ directory relative to script location
+    songs_dir = Path(__file__).parent.resolve() / 'songs'
+    songs_dir.mkdir(exist_ok=True)
     
-    print(f"Downloading {len(tracks)} tracks to: {downloads_dir}")
+    print(f"Downloading {len(tracks)} tracks to: {songs_dir}")
     print(f"Delay between downloads: {delay}s")
     print("-" * 50)
     
@@ -108,7 +117,8 @@ def process_output_json(json_path: Path, delay: float) -> None:
         
         # Create sanitized filename
         filename = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}.m4a"
-        output_path = downloads_dir / filename
+        output_path = songs_dir / filename
+        relative_path = f"songs/{filename}"
         
         print(f"[{i}/{len(tracks)}] Downloading: {artist} - {track_name}...")
         
@@ -119,7 +129,7 @@ def process_output_json(json_path: Path, delay: float) -> None:
             success_count += 1
             
             # Update track with local path
-            track['local_path'] = str(output_path.resolve())
+            track['local_path'] = relative_path
             
             # Save output.json after each successful download
             with open(json_path, 'w', encoding='utf-8') as f:
@@ -138,7 +148,7 @@ def process_output_json(json_path: Path, delay: float) -> None:
             time.sleep(delay)
     
     # Save failures
-    failures_path = output_dir / 'failures.json'
+    failures_path = json_path.parent / 'failures.json'
     if failures:
         with open(failures_path, 'w', encoding='utf-8') as f:
             json.dump(failures, f, indent=2, ensure_ascii=False)

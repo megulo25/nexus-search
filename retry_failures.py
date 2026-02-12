@@ -41,7 +41,7 @@ def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
                 '--extract-audio',
                 '--audio-format', 'm4a',
                 '--audio-quality', '0',
-                '-o', str(output_path),
+                '-o', str(output_path.with_suffix('.%(ext)s')),
                 url
             ],
             capture_output=True,
@@ -51,6 +51,16 @@ def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
         
         if result.returncode != 0:
             return False, result.stderr.strip() or result.stdout.strip()
+        
+        # Verify the file was actually written to disk
+        if not output_path.exists():
+            # Check if yt-dlp left the file with a different extension
+            stem = output_path.stem
+            alt_files = list(output_path.parent.glob(f"{stem}.*"))
+            if alt_files:
+                alt_files[0].rename(output_path)
+            else:
+                return False, f'Download succeeded but file not found at {output_path}'
         
         return True, ''
         
@@ -71,7 +81,10 @@ def process_failures(failures_path: Path, delay: float) -> None:
     # Determine paths
     output_dir = failures_path.parent
     output_json_path = output_dir / 'output.json'
-    downloads_dir = output_dir / 'downloads'
+    
+    # Use global songs/ directory relative to script location
+    songs_dir = Path(__file__).parent.resolve() / 'songs'
+    songs_dir.mkdir(exist_ok=True)
     
     # Load failures
     with open(failures_path, 'r', encoding='utf-8') as f:
@@ -89,9 +102,6 @@ def process_failures(failures_path: Path, delay: float) -> None:
     with open(output_json_path, 'r', encoding='utf-8') as f:
         tracks = json.load(f)
     
-    # Create downloads directory if needed
-    downloads_dir.mkdir(exist_ok=True)
-    
     print(f"Retrying {len(failures)} failed downloads")
     print(f"Output directory: {output_dir}")
     print(f"Delay between downloads: {delay}s")
@@ -104,6 +114,7 @@ def process_failures(failures_path: Path, delay: float) -> None:
         track_name = failure.get('track_name', 'Unknown')
         artist = failure.get('artist', 'Unknown')
         url = failure.get('url', '')
+        prev_error = failure.get('error', failure.get('error_reason', ''))
         
         if not url:
             print(f"[{i}/{len(failures)}] ✗ {artist} - {track_name}: No URL")
@@ -117,7 +128,8 @@ def process_failures(failures_path: Path, delay: float) -> None:
         
         # Create sanitized filename
         filename = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}.m4a"
-        output_path = downloads_dir / filename
+        output_path = songs_dir / filename
+        relative_path = f"songs/{filename}"
         
         print(f"[{i}/{len(failures)}] Retrying: {artist} - {track_name}...")
         
@@ -130,7 +142,7 @@ def process_failures(failures_path: Path, delay: float) -> None:
             # Find and update matching track in output.json by URL
             for track in tracks:
                 if track.get('url') == url:
-                    track['local_path'] = str(output_path.resolve())
+                    track['local_path'] = relative_path
                     break
             
             # Save output.json after each successful download

@@ -37,10 +37,8 @@ def export_playlists(playlists_dir: Path, output_dir: Path, dry_run: bool) -> No
     """Export output.json files to playlists/ directory."""
     
     # Validate playlists directory exists
-    if not playlists_dir.exists():
-        print(f"Error: Playlists directory does not exist: {playlists_dir}")
-        print("Please create it first: mkdir playlists")
-        sys.exit(1)
+    # Create playlists directory if it doesn't exist
+    playlists_dir.mkdir(exist_ok=True)
     
     if not playlists_dir.is_dir():
         print(f"Error: {playlists_dir} is not a directory")

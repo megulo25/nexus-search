@@ -64,6 +64,11 @@ def process_output_json(json_path: Path) -> None:
         
         file_path = Path(local_path)
         
+        # If path doesn't exist as-is, try resolving relative to script directory
+        if not file_path.exists():
+            script_dir = Path(__file__).parent.resolve()
+            file_path = script_dir / local_path
+        
         # Check if file exists
         if not file_path.exists():
             print(f"[{i}/{len(tracks)}] ✗ {artist} - {track_name}: File not found")
