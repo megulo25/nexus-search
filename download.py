@@ -70,6 +70,49 @@ def download_audio(url: str, output_path: Path) -> tuple[bool, str]:
         return False, str(e)
 
 
+def download_thumbnail(url: str, thumbnails_dir: Path) -> str:
+    """
+    Download the YouTube video thumbnail.
+    Extracts the video ID from the URL and downloads the best available thumbnail.
+
+    Returns:
+        str: Relative path to thumbnail (e.g., 'thumbnails/VIDEO_ID.jpg') or empty string on failure.
+    """
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlparse, parse_qs
+
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        video_id = qs.get('v', [None])[0]
+        if not video_id:
+            return ""
+
+        thumbnail_path = thumbnails_dir / f"{video_id}.jpg"
+        if thumbnail_path.exists() and thumbnail_path.stat().st_size > 1000:
+            return f"thumbnails/{video_id}.jpg"
+
+        # Try maxresdefault first, then hqdefault
+        for res in ('maxresdefault', 'hqdefault'):
+            thumb_url = f"https://img.youtube.com/vi/{video_id}/{res}.jpg"
+            try:
+                req = urllib.request.Request(thumb_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = response.read()
+                    if len(data) < 1000:
+                        continue
+                    with open(thumbnail_path, 'wb') as f:
+                        f.write(data)
+                    return f"thumbnails/{video_id}.jpg"
+            except (urllib.error.HTTPError, Exception):
+                continue
+
+    except Exception:
+        pass
+    return ""
+
+
 def process_output_json(json_path: Path, delay: float) -> None:
     """Process an output.json file and download all tracks."""
     
@@ -92,6 +135,9 @@ def process_output_json(json_path: Path, delay: float) -> None:
     # Use global songs/ directory relative to script location
     songs_dir = Path(__file__).parent.resolve() / 'songs'
     songs_dir.mkdir(exist_ok=True)
+
+    thumbnails_dir = Path(__file__).parent.resolve() / 'thumbnails'
+    thumbnails_dir.mkdir(exist_ok=True)
     
     print(f"Downloading {len(tracks)} tracks to: {songs_dir}")
     print(f"Delay between downloads: {delay}s")
@@ -130,6 +176,11 @@ def process_output_json(json_path: Path, delay: float) -> None:
             
             # Update track with local path
             track['local_path'] = relative_path
+
+            # Download thumbnail
+            thumb_path = download_thumbnail(url, thumbnails_dir)
+            if thumb_path:
+                track['thumbnail_path'] = thumb_path
             
             # Save output.json after each successful download
             with open(json_path, 'w', encoding='utf-8') as f:

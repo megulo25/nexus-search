@@ -84,6 +84,56 @@ def get_songs_dir() -> Path:
     return songs_dir
 
 
+def get_thumbnails_dir() -> Path:
+    """Get the global thumbnails/ directory relative to the script location."""
+    thumbnails_dir = Path(__file__).parent.resolve() / 'thumbnails'
+    thumbnails_dir.mkdir(exist_ok=True)
+    return thumbnails_dir
+
+
+def download_thumbnail(url: str, thumbnails_dir: Path) -> str:
+    """
+    Download the YouTube video thumbnail.
+    Extracts the video ID from the URL and downloads the best available thumbnail.
+
+    Returns:
+        str: Relative path to thumbnail (e.g., 'thumbnails/VIDEO_ID.jpg') or empty string on failure.
+    """
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlparse, parse_qs
+
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        video_id = qs.get('v', [None])[0]
+        if not video_id:
+            return ""
+
+        thumbnail_path = thumbnails_dir / f"{video_id}.jpg"
+        if thumbnail_path.exists() and thumbnail_path.stat().st_size > 1000:
+            return f"thumbnails/{video_id}.jpg"
+
+        # Try maxresdefault first, then hqdefault
+        for res in ('maxresdefault', 'hqdefault'):
+            thumb_url = f"https://img.youtube.com/vi/{video_id}/{res}.jpg"
+            try:
+                req = urllib.request.Request(thumb_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = response.read()
+                    if len(data) < 1000:
+                        continue
+                    with open(thumbnail_path, 'wb') as f:
+                        f.write(data)
+                    return f"thumbnails/{video_id}.jpg"
+            except (urllib.error.HTTPError, Exception):
+                continue
+
+    except Exception:
+        pass
+    return ""
+
+
 def download_song(song: dict, songs_dir: Path) -> tuple[bool, str, str, str]:
     """
     Search and download a song from YouTube using yt-dlp.
@@ -189,6 +239,7 @@ def main():
     print(f"Found {len(songs)} songs")
     
     # Process each song
+    thumbnails_dir = get_thumbnails_dir()
     output_json_path = output_dir / "output.json"
     failures_json_path = output_dir / "failures.json"
     successful = []
@@ -203,11 +254,16 @@ def main():
         success, url, local_path, error_reason = download_song(song, songs_dir)
         
         if success:
-            successful.append({
+            entry = {
                 **song,
                 "url": url,
                 "local_path": local_path
-            })
+            }
+            # Download thumbnail
+            thumb_path = download_thumbnail(url, thumbnails_dir)
+            if thumb_path:
+                entry["thumbnail_path"] = thumb_path
+            successful.append(entry)
             print(f"  ✓ Success: {url}")
             
             # Save output.json after each successful download (resumable)
