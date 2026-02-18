@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from yt_search import search_youtube
+
 
 def sanitize_filename(name: str) -> str:
     """Remove invalid characters and replace spaces with underscores."""
@@ -115,16 +117,28 @@ def process_failures(failures_path: Path, delay: float) -> None:
         artist = failure.get('artist', 'Unknown')
         url = failure.get('url', '')
         prev_error = failure.get('error', failure.get('error_reason', ''))
+        duration_ms = failure.get('duration_ms')
         
+        # If no URL, perform a fresh YouTube search
         if not url:
-            print(f"[{i}/{len(failures)}] ✗ {artist} - {track_name}: No URL")
-            remaining_failures.append({
-                'track_name': track_name,
-                'artist': artist,
-                'url': url,
-                'error': 'No URL provided'
-            })
-            continue
+            print(f"[{i}/{len(failures)}] Searching: {artist} - {track_name}...")
+            try:
+                dur = int(duration_ms) if duration_ms else None
+            except (ValueError, TypeError):
+                dur = None
+            url, strategy = search_youtube(track_name, artist, duration_ms=dur)
+            if not url:
+                print(f"[{i}/{len(failures)}] ✗ {artist} - {track_name}: {strategy}")
+                remaining_failures.append({
+                    'track_name': track_name,
+                    'artist': artist,
+                    'url': '',
+                    'error': strategy
+                })
+                if i < len(failures):
+                    time.sleep(delay)
+                continue
+            print(f"[{i}/{len(failures)}]   Found via {strategy}")
         
         # Create sanitized filename
         filename = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}.m4a"
@@ -139,11 +153,31 @@ def process_failures(failures_path: Path, delay: float) -> None:
             print(f"[{i}/{len(failures)}] ✓ {artist} - {track_name}")
             success_count += 1
             
-            # Find and update matching track in output.json by URL
+            # Find and update matching track in output.json
+            # Match by URL first, then by artist+track_name for re-searched tracks
+            matched = False
             for track in tracks:
                 if track.get('url') == url:
                     track['local_path'] = relative_path
+                    matched = True
                     break
+            if not matched:
+                # Track was re-searched (had no URL before) — match by metadata
+                for track in tracks:
+                    if (track.get('track_name', '').lower() == track_name.lower()
+                            and track.get('artist', '').lower() == artist.lower()):
+                        track['url'] = url
+                        track['local_path'] = relative_path
+                        matched = True
+                        break
+            if not matched:
+                # Track doesn't exist in output.json yet — append it
+                tracks.append({
+                    'track_name': track_name,
+                    'artist': artist,
+                    'url': url,
+                    'local_path': relative_path,
+                })
             
             # Save output.json after each successful download
             with open(output_json_path, 'w', encoding='utf-8') as f:

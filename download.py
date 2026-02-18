@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from yt_search import search_youtube
+
 
 def sanitize_filename(name: str) -> str:
     """Remove invalid characters and replace spaces with underscores."""
@@ -151,15 +153,28 @@ def process_output_json(json_path: Path, delay: float) -> None:
         artist = track.get('artist', 'Unknown')
         url = track.get('url', '')
         
+        # If no URL, perform a fresh YouTube search
         if not url:
-            print(f"[{i}/{len(tracks)}] ✗ {artist} - {track_name}: No URL")
-            failures.append({
-                'track_name': track_name,
-                'artist': artist,
-                'url': url,
-                'error': 'No URL provided'
-            })
-            continue
+            print(f"[{i}/{len(tracks)}] Searching: {artist} - {track_name}...")
+            try:
+                dur = int(track.get('duration_ms') or 0)
+            except (ValueError, TypeError):
+                dur = None
+            url, strategy = search_youtube(track_name, artist, duration_ms=dur)
+            if not url:
+                print(f"[{i}/{len(tracks)}] ✗ {artist} - {track_name}: {strategy}")
+                failures.append({
+                    'track_name': track_name,
+                    'artist': artist,
+                    'url': '',
+                    'error': strategy
+                })
+                if i < len(tracks):
+                    time.sleep(delay)
+                continue
+            # Store the resolved URL back on the track
+            track['url'] = url
+            print(f"[{i}/{len(tracks)}]   Found via {strategy}")
         
         # Create sanitized filename
         filename = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}.m4a"

@@ -16,6 +16,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from yt_search import search_youtube
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -137,6 +139,7 @@ def download_thumbnail(url: str, thumbnails_dir: Path) -> str:
 def download_song(song: dict, songs_dir: Path) -> tuple[bool, str, str, str]:
     """
     Search and download a song from YouTube using yt-dlp.
+    Uses progressive multi-strategy search with duration-based ranking.
     Downloads to the global songs/ directory.
     
     Returns:
@@ -144,7 +147,12 @@ def download_song(song: dict, songs_dir: Path) -> tuple[bool, str, str, str]:
     """
     track_name = song["track_name"]
     artist = song["artist"]
-    search_query = f"{track_name} {artist}"
+    
+    # Parse duration_ms for candidate ranking
+    try:
+        duration_ms = int(song.get("duration_ms") or 0)
+    except (ValueError, TypeError):
+        duration_ms = None
     
     # Sanitize filename
     base = f"{sanitize_filename(artist)}-{sanitize_filename(track_name)}"
@@ -154,29 +162,13 @@ def download_song(song: dict, songs_dir: Path) -> tuple[bool, str, str, str]:
     relative_path = f"songs/{filename}"
     
     try:
-        # Step 1: Search YouTube and get the URL (no download)
-        search_result = subprocess.run(
-            [
-                "yt-dlp",
-                "--print", "webpage_url",
-                "--no-download",
-                f"ytsearch1:{search_query}"
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60
+        # Step 1: Search YouTube using progressive strategies
+        url, strategy = search_youtube(
+            track_name, artist, duration_ms=duration_ms
         )
         
-        if search_result.returncode != 0:
-            error_msg = search_result.stderr.strip() if search_result.stderr else "Unknown error"
-            if "no results" in error_msg.lower():
-                return False, "", "", "No results found"
-            return False, "", "", error_msg
-        
-        url = search_result.stdout.strip().split("\n")[0]
-        
-        if not url or not url.startswith("http"):
-            return False, "", "", "Could not extract YouTube URL"
+        if not url:
+            return False, "", "", strategy  # contains error description
         
         # Step 2: Download audio using the resolved URL
         dl_result = subprocess.run(
@@ -264,7 +256,7 @@ def main():
             if thumb_path:
                 entry["thumbnail_path"] = thumb_path
             successful.append(entry)
-            print(f"  ✓ Success: {url}")
+            print(f"  ✓ {url}")
             
             # Save output.json after each successful download (resumable)
             with open(output_json_path, "w", encoding="utf-8") as f:
@@ -273,6 +265,8 @@ def main():
             failures.append({
                 "track_name": track_name,
                 "artist": artist,
+                "album": song.get("album", ""),
+                "duration_ms": song.get("duration_ms", ""),
                 "url": url,
                 "error": error_reason
             })
